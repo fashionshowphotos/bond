@@ -1,10 +1,10 @@
 # Bond
 
-Universal MCP (Model Context Protocol) server that gives desktop applications AI-powered tools.
-Connects to OnlyOffice, LibreOffice, or any MCP-compatible host. Written in Python with
-enterprise-grade security hardening.
+Universal MCP (Model Context Protocol) adapter for desktop and editor hosts.
+Exposes one hardened tool server that fits any MCP-compatible client:
+Claude Desktop, Claude Code, OnlyOffice, LibreOffice, or custom MCP hosts.
 
-**Keywords:** MCP server, Model Context Protocol, Claude Desktop, Claude Code, OnlyOffice MCP, desktop automation, Python JSON-RPC, AI tool calling
+**Keywords:** MCP server, universal MCP adapter, Model Context Protocol, Claude Desktop, Claude Code, desktop automation, Python JSON-RPC, AI tool calling, OnlyOffice integration
 **Version:** 0.2.0
 **Protocol:** MCP 2024-11-05 (JSON-RPC 2.0 over stdin/stdout)
 **License:** Free for non-commercial use; paid license required for commercial use
@@ -23,7 +23,7 @@ enterprise-grade security hardening.
 8. [Environment Variables](#environment-variables)
 9. [CLI Flags](#cli-flags)
 10. [Plugin System](#plugin-system)
-11. [OnlyOffice Integration](#onlyoffice-integration)
+11. [Host Integrations](#host-integrations)
 12. [Smoke Tests](#smoke-tests)
 13. [Architecture](#architecture)
 14. [Troubleshooting](#troubleshooting)
@@ -61,7 +61,7 @@ Bond exposes **16 tools across 4 modules** via the MCP protocol:
 | **web_bridge** (3) | `ask_web_ai`, `read_web_ai`, `list_available_automations` | Query external Web AIs (ChatGPT, DeepSeek, Claude, Gemini, Grok, Kimi) |
 | **orchestrator** (4) | `get_status`, `update_status`, `append_ledger`, `read_ledger` | Task orchestration with JSONL audit ledger |
 
-Any MCP-compatible client can call these tools: OnlyOffice, Claude Desktop, LibreOffice, or custom clients.
+Any MCP-compatible client can call these tools. Bond is host-agnostic by design.
 
 ---
 
@@ -117,7 +117,7 @@ python -u bond_server.py \
 bond_mcp.bat
 ```
 
-This runs the default dev command. For hosts that are sensitive to spaces in paths (like OnlyOffice), use `bond_launcher.py` from a simple path like `C:\Bond\`.
+This runs the default dev command. For hosts that are sensitive to spaces in paths (including OnlyOffice), use `bond_launcher.py` from a simple path like `C:\Bond\`.
 
 ---
 
@@ -479,19 +479,33 @@ Bond supports out-of-process plugins that run as separate MCP servers in subproc
 
 ---
 
-## OnlyOffice Integration
+## Host Integrations
+
+Use Bond with any MCP host that launches a stdio server and speaks JSON-RPC 2.0.
+
+### Generic MCP Host Setup
+
+1. Add Bond as an MCP server command in your host settings.
+2. Start with `bond_mcp.bat` (Windows) or:
+   ```
+   python -u bond_server.py --policy RESTRICTED --insecure-allow-unverified-modules
+   ```
+3. Keep unbuffered Python (`-u`) so line-by-line JSON-RPC works correctly.
+4. If your path has spaces and your host is strict, use `bond_launcher.py` from a simple path like `C:\Bond\`.
+
+### OnlyOffice (Example)
 
 Connect Bond as an MCP server in OnlyOffice:
 
-1. In OnlyOffice settings, add an MCP server
+1. In OnlyOffice settings, add an MCP server.
 2. Point the command at `bond_mcp.bat` or:
    ```
    python -u bond_server.py --policy RESTRICTED --insecure-allow-unverified-modules
    ```
-3. Use unbuffered Python (`-u` flag) — required for line-by-line JSON-RPC
-4. If your path has spaces, use `bond_launcher.py` from a simple path like `C:\Bond\`
+3. Use unbuffered Python (`-u` flag), required for line-by-line JSON-RPC.
+4. If your path has spaces, use `bond_launcher.py` from a simple path like `C:\Bond\`.
 
-**Note:** OnlyOffice can skip the MCP `initialize` handshake and call `tools/list` directly. Bond supports both flows.
+**Note:** OnlyOffice may skip the MCP `initialize` handshake and call `tools/list` directly. Bond supports both flows.
 
 ---
 
@@ -516,7 +530,7 @@ python -m pytest -q
 
 Expected: Two JSON responses — `initialize` result with `protocolVersion`, then `tools/list` with 16 tools.
 
-### OnlyOffice-Style Test (No Initialize)
+### Host-Style Test (No Initialize, e.g., OnlyOffice)
 
 ```powershell
 @'
@@ -594,7 +608,7 @@ bond_mcp.bat             Windows batch launcher (default dev command).
 ### Data Flow
 
 ```
-MCP Client (OnlyOffice / Claude Desktop / etc.)
+MCP Client (Claude Desktop / Claude Code / OnlyOffice / custom host)
     │
     │  JSON-RPC over stdin/stdout
     ▼
@@ -638,7 +652,7 @@ The Web Bridge needs a running Firejumper Hub at `ws://localhost:7201` (or custo
 ### Tools load but all calls return errors
 Check the governance policy. `OBSERVE_ONLY` blocks all writes. Use `--policy RESTRICTED` or higher.
 
-### OnlyOffice can't find the server
+### Host can't find the server (including OnlyOffice)
 - Use `bond_mcp.bat` or a path without spaces
 - Make sure Python is on PATH
 - Use `-u` for unbuffered output
