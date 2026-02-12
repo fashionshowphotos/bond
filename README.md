@@ -4,6 +4,7 @@ Universal MCP (Model Context Protocol) server that gives desktop applications AI
 Connects to OnlyOffice, LibreOffice, or any MCP-compatible host. Written in Python with
 enterprise-grade security hardening.
 
+**Keywords:** MCP server, Model Context Protocol, Claude Desktop, Claude Code, OnlyOffice MCP, desktop automation, Python JSON-RPC, AI tool calling
 **Version:** 0.2.0
 **Protocol:** MCP 2024-11-05 (JSON-RPC 2.0 over stdin/stdout)
 **License:** Free for non-commercial use; paid license required for commercial use
