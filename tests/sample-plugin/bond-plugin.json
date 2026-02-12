@@ -1,0 +1,1 @@
+{"name": "sample-test", "version": "0.1.0", "command": "python", "args": ["-u", "server.py"], "timeout_seconds": 10, "files_sha256": {}}

@@ -1,0 +1,88 @@
+{
+  "name": "bond-vscode",
+  "displayName": "Bond",
+  "description": "Start and control Bond server workflows from VS Code.",
+  "publisher": "coherent-light",
+  "version": "0.1.0",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.cjs",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:bond.start",
+    "onCommand:bond.stop",
+    "onCommand:bond.restart",
+    "onCommand:bond.status",
+    "onCommand:bond.runTests",
+    "onCommand:bond.openReadme",
+    "onCommand:bond.openProjectRoot"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "bond.start",
+        "title": "Bond: Start"
+      },
+      {
+        "command": "bond.stop",
+        "title": "Bond: Stop"
+      },
+      {
+        "command": "bond.restart",
+        "title": "Bond: Restart"
+      },
+      {
+        "command": "bond.status",
+        "title": "Bond: Status"
+      },
+      {
+        "command": "bond.runTests",
+        "title": "Bond: Run Tests"
+      },
+      {
+        "command": "bond.openReadme",
+        "title": "Bond: Open README"
+      },
+      {
+        "command": "bond.openProjectRoot",
+        "title": "Bond: Open Project Root"
+      }
+    ],
+    "configuration": {
+      "title": "Bond",
+      "properties": {
+        "bond.rootPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the Bond project root."
+        },
+        "bond.runCommand": {
+          "type": "string",
+          "default": "python -u bond_server.py --policy RESTRICTED --insecure-allow-unverified-modules",
+          "description": "Shell command used by 'Bond: Start'."
+        },
+        "bond.testCommand": {
+          "type": "string",
+          "default": "python -m pytest -q",
+          "description": "Shell command used by 'Bond: Run Tests'."
+        },
+        "bond.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run 'Bond: Start' when VS Code starts."
+        },
+        "bond.showOutputOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Focus the extension output channel when starting."
+        }
+      }
+    }
+  }
+}
+

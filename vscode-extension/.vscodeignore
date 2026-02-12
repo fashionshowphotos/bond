@@ -1,0 +1,8 @@
+**/.git/**
+**/.DS_Store
+**/Thumbs.db
+**/node_modules/**
+**/state/**
+**/io/**
+**/output/**
+**/.pytest_cache/**
