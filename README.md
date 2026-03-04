@@ -52,14 +52,16 @@ The server reads JSON-RPC from stdin and writes responses to stdout. Logs go to 
 
 ## What It Does
 
-Bond exposes **16 tools across 4 modules** via the MCP protocol:
+Bond exposes **24 tools across 6 modules** via the MCP protocol:
 
 | Module | Tools | Purpose |
 |--------|-------|---------|
-| **filesystem** (5) | `read_file`, `write_file`, `list_directory`, `search_files`, `file_info` | Sandboxed file operations with TOCTOU protection |
+| **filesystem** (6) | `read_file`, `write_file`, `read_file_hash`, `list_directory`, `search_files`, `file_info` | Sandboxed file operations with TOCTOU protection |
 | **firejumper** (4) | `firejumper_latch`, `firejumper_execute`, `firejumper_screenshot`, `firejumper_list_learned` | VLM-powered UI automation (learn and control any program) |
 | **web_bridge** (3) | `ask_web_ai`, `read_web_ai`, `list_available_automations` | Query external Web AIs (ChatGPT, DeepSeek, Claude, Gemini, Grok, Kimi) |
 | **orchestrator** (4) | `get_status`, `update_status`, `append_ledger`, `read_ledger` | Task orchestration with JSONL audit ledger |
+| **bus_ipc** (3) | `list_agents`, `send_to_agent`, `wait_for_reply` | Direct IPC bridge to VS Code agents (Copilot, Codex, Antigravity) |
+| **bus_v5** (4) | `bus_post`, `bus_post_wait`, `bus_actors`, `bus_status` | Multi-agent bus with offline queuing, fan-out, and reply correlation |
 
 Any MCP-compatible client can call these tools. Bond is host-agnostic by design.
 
@@ -101,15 +103,58 @@ The `-u` flag forces unbuffered stdout, which is critical for MCP clients that r
 
 ### Production Mode
 
-For production, create a manifest file and remove the insecure flag:
+For production, generate a manifest file and remove the insecure flag:
 
 ```bash
+# Generate module integrity manifests (SHA-256 hashes)
+python scripts/generate_manifests.py
+
+# Start in production mode
 python -u bond_server.py \
   --policy BROAD \
   --auth-token-file /path/to/token \
   --rate-limit 50 \
   --require-plugin-hashes
 ```
+
+### HTTP + SSE Mode (Remote Access)
+
+For remote MCP clients (e.g. Claude Code on a phone connecting to your desktop):
+
+```bash
+# Local only (default — binds to 127.0.0.1)
+python -u bond_server.py --http --http-port 8900 \
+  --policy RESTRICTED --insecure-allow-unverified-modules
+
+# Remote access (with auth — REQUIRED for network exposure)
+python -u bond_server.py --http --http-port 8900 --http-host 0.0.0.0 \
+  --auth-token-file /path/to/token \
+  --policy RESTRICTED --insecure-allow-unverified-modules
+```
+
+Endpoints:
+- `POST /mcp` — JSON-RPC requests (same protocol as stdio)
+- `GET /mcp` — SSE stream for server-initiated notifications
+- `GET /health` — Health check (no auth required)
+- `DELETE /mcp` — Close session
+
+Auth: Bearer token in `Authorization: Bearer <token>` header.
+
+To connect Claude Code on your phone, add Bond as a remote MCP server:
+```json
+{
+  "mcpServers": {
+    "bond": {
+      "url": "http://<your-desktop-ip>:8900/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+**Security note:** If binding to `0.0.0.0`, always use `--auth-token-file`. Bond will warn if you expose the server to the network without authentication.
 
 ### Windows Batch Launcher
 
@@ -199,8 +244,18 @@ Write content to a file within the sandbox. Uses atomic writes (temp file + rena
 |-----------|------|-------------|
 | `path` | string | File path to write |
 | `content` | string | Content to write |
+| `required_hash` | string | Optional SHA-256 hex digest of current file content. If provided and the file exists, the write is aborted with `HashMismatch` if the on-disk hash differs — preventing silent overwrites of concurrent edits. |
 
 **Safety:** MODERATE | **Max content:** 16 MB | **Symlinks:** Refused
+
+#### `read_file_hash`
+Returns the SHA-256 hex digest of a file's current content without returning the content itself. Use this to obtain a `required_hash` before calling `write_file` to prevent blind overwrites.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `path` | string | File path to hash |
+
+**Safety:** SAFE
 
 #### `list_directory`
 List directory contents within the sandbox.
@@ -350,6 +405,92 @@ Read recent entries from the audit ledger.
 
 ---
 
+### Bus IPC Module
+
+Bridge between MCP hosts (like Claude Desktop) and VS Code agents (Copilot, Codex, Antigravity) via the IPC Bridge extension. Enables AFK communication: Claude Desktop can talk to VS Code agents without browser automation.
+
+#### `list_agents`
+List configured IPC targets with their reachability status.
+
+**Parameters:** None
+**Safety:** SAFE | **Returns:** Array of `{target_id, reachable, details}`
+
+#### `send_to_agent`
+Send a message to a VS Code agent via the IPC Bridge.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `target_id` | string | Target agent: `copilot`, `codex`, or `antigravity` |
+| `message` | string | Message text (max 4000 chars) |
+| `idempotency_key` | string | Optional key to deduplicate sends within 60s |
+
+**Safety:** MODERATE | **Returns:** `{message_id}` for reply correlation
+
+#### `wait_for_reply`
+Poll for a reply to a previously sent message.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `target_id` | string | Target agent the message was sent to |
+| `message_id` | string | `message_id` returned from `send_to_agent` |
+| `timeout_ms` | number | Max wait time in ms (default: 30000) |
+
+**Safety:** SAFE
+
+---
+
+### Bus v5 Module
+
+Unified multi-agent message bus via the Bus v5 WebSocket gateway (port 18900). Routes messages to any actor — IDE AIs (via IPC adapter), browser AIs (via AI Bridge adapter), other Claude Code instances, or custom agents.
+
+**Advantages over bus_ipc (direct IPC Bridge):**
+- **Offline queuing** — messages held until recipient connects
+- **Fan-out** — send to all actors with `to="all"`
+- **Two-AI gate** — HMAC approval before code execution
+- **Unified addressing** — canonical `{ide}-{ai}-{n}` actor IDs
+- **Reply correlation** — `request_id`-based request-reply pattern
+
+**Requires:** Bus v5 gateway running (`node start.js` in `15 - Bus v5/`).
+
+#### `bus_post`
+Send a message to any Bus v5 actor.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `to` | string | Target actor ID (e.g. `codex-2`, `copilot`, `windsurf-claude-1`, or `all`) |
+| `subject` | string | Message subject (max 256 chars) |
+| `body` | string | Message body (max 64KB) |
+| `msg_type` | string | Optional: `note` (default), `task`, `review`, `approval` |
+
+**Safety:** MODERATE
+
+#### `bus_post_wait`
+Send a message and wait for a reply. Uses Bus v5 request-reply correlation.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `to` | string | Target actor ID |
+| `subject` | string | Message subject |
+| `body` | string | Message body |
+| `timeout_ms` | integer | Reply timeout in ms (default: 60000) |
+| `msg_type` | string | Optional message type (default: `note`) |
+
+**Safety:** MODERATE
+
+#### `bus_actors`
+List actors currently registered with the Bus v5 gateway.
+
+**Parameters:** None
+**Safety:** SAFE | **Returns:** `{actors, count, gateway_pid}`
+
+#### `bus_status`
+Check Bus v5 gateway health.
+
+**Parameters:** None
+**Safety:** SAFE | **Returns:** `{port, pid, actor_count, offline_queue_depth, uptime_s}`
+
+---
+
 ## Governance & Security
 
 Bond uses a 4-tier governance system that controls which tools can execute based on their safety level.
@@ -403,6 +544,10 @@ Bond includes defense-in-depth:
 | `FIREJUMPER_SCREEN_HEIGHT` | No | `1080` | Screen height for screenshot capture |
 | `BOND_MCP_AUTH_TOKEN` | No | — | MCP authentication token |
 | `BOND_DIR` | No | — | Override Bond directory (launcher only) |
+| `BUS_V5_DIR` | No | `../../15 - Bus v5` | Override Bus v5 installation directory |
+| `BUS_V5_PORT` | No | `18900` | Bus v5 gateway WebSocket port |
+| `BUS_V5_TRAIN_PATH` | No | `$BUS_V5_DIR/_train` | Bus v5 message artifact directory |
+| `BOND_BUS_V5_ACTOR` | No | `bond-mcp` | Actor identity for Bus v5 messages |
 
 ### Feature Availability by Environment
 
@@ -413,6 +558,7 @@ Bond includes defense-in-depth:
 | Firejumper VLM (latch/screenshot) | `OPENROUTER_API_KEY` |
 | Firejumper ConnectorStore | `FIREJUMPER_DIR` |
 | Web Bridge | `FIREJUMPER_HUB` (running Firejumper Hub) |
+| Bus v5 | Bus v5 gateway running (port 18900) |
 
 ---
 
@@ -436,6 +582,9 @@ python -u bond_server.py [OPTIONS]
 | `--plugins-dir` | — | Plugin directory (repeatable for multiple dirs) |
 | `--allow-entry-points` | off | Enable pip entry_points plugin discovery (supply chain risk) |
 | `--require-plugin-hashes` | off | Reject plugins without `files_sha256` |
+| `--http` | off | Use HTTP+SSE transport instead of stdio |
+| `--http-port` | `8900` | HTTP server port (requires `--http`) |
+| `--http-host` | `127.0.0.1` | HTTP bind address (`0.0.0.0` for remote access) |
 
 ---
 
@@ -528,7 +677,7 @@ python -m pytest -q
 '@ | python -u bond_server.py --policy RESTRICTED --insecure-allow-unverified-modules
 ```
 
-Expected: Two JSON responses — `initialize` result with `protocolVersion`, then `tools/list` with 16 tools.
+Expected: Two JSON responses — `initialize` result with `protocolVersion`, then `tools/list` with 24 tools.
 
 ### Host-Style Test (No Initialize, e.g., OnlyOffice)
 
@@ -538,7 +687,7 @@ Expected: Two JSON responses — `initialize` result with `protocolVersion`, the
 '@ | python -u bond_server.py --policy RESTRICTED --insecure-allow-unverified-modules
 ```
 
-Expected: `tools/list` returns an array of 16 tools (not `[]`).
+Expected: `tools/list` returns an array of 24 tools (not `[]`).
 
 ### Tool Call Test
 
@@ -588,7 +737,9 @@ bond_mcp.bat             Windows batch launcher (default dev command).
 │   ├── filesystem.py    Sandboxed file ops (5 tools). TOCTOU-safe.
 │   ├── firejumper.py    VLM UI automation (4 tools). ConnectorSpec v0.2.1.
 │   ├── web_bridge.py    Web AI bridge (3 tools). WebSocket to Firejumper Hub.
-│   └── orchestrator.py  Task orchestration (4 tools). JSONL audit ledger.
+│   ├── orchestrator.py  Task orchestration (4 tools). JSONL audit ledger.
+│   ├── bus_ipc.py       IPC bridge to VS Code agents (3 tools).
+│   └── bus_v5.py        Multi-agent bus via Bus v5 gateway (4 tools).
 │
 ├── models/
 │   └── models.py        Data models: Tool, SafetyLevel, PolicyMode,

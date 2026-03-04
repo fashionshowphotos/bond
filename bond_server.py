@@ -247,8 +247,14 @@ async def shutdown_plugins(
             )
 
 
+__version__ = "0.2.0"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Bond MCP Server (Hardened)")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}",
+    )
     parser.add_argument(
         "--policy",
         type=str,
@@ -292,6 +298,18 @@ def main():
         "--require-plugin-hashes", action="store_true",
         help="Reject plugins with empty files_sha256 (recommended for production)",
     )
+    parser.add_argument(
+        "--http", action="store_true",
+        help="Run HTTP+SSE transport instead of stdio (for remote MCP clients)",
+    )
+    parser.add_argument(
+        "--http-port", type=int, default=8900,
+        help="HTTP transport port (default: 8900, requires --http)",
+    )
+    parser.add_argument(
+        "--http-host", type=str, default="127.0.0.1",
+        help="HTTP bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)",
+    )
     args = parser.parse_args()
 
     # --- Input validation ---
@@ -299,6 +317,9 @@ def main():
         parser.error("--rate-limit must be >= 1")
     if args.rate_limit > 10000:
         parser.error("--rate-limit must be <= 10000")
+    if args.http_port < 1 or args.http_port > 65535:
+        parser.error("--http-port must be 1-65535")
+    # B4: auth_token check moved after auth resolution (was NameError here)
 
     # --- Logging ---
     configure_logging(args.log_level, args.log_file)
@@ -558,6 +579,13 @@ def main():
                 tool_registry.register(tool)
                 task_logger.register_tool_redaction(tool)
 
+        # --- Warn if HTTP on 0.0.0.0 without auth ---
+        if args.http and args.http_host == "0.0.0.0" and not auth_token:
+            logger.warning(
+                "HTTP transport bound to 0.0.0.0 WITHOUT authentication! "
+                "Anyone on the network can call Bond tools. Set --auth-token-file."
+            )
+
         # --- Server ---
         server = BondMCPServer(core_dispatcher, tool_registry, auth_token=auth_token)
 
@@ -641,9 +669,19 @@ def main():
                 file=sys.stderr,
             )
 
-            # Run MCP stdio loop — always clean up plugins on exit
+            # Run transport — always clean up plugins on exit
             try:
-                await server.run_stdio()
+                if args.http:
+                    from core.http_transport import HttpTransport
+                    http = HttpTransport(
+                        mcp_server=server,
+                        host=args.http_host,
+                        port=args.http_port,
+                        auth_token=auth_token,
+                    )
+                    await http.run()
+                else:
+                    await server.run_stdio()
             finally:
                 if active_plugins:
                     await shutdown_plugins(active_plugins, logger)
